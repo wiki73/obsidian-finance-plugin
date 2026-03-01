@@ -1,275 +1,333 @@
-const { Plugin, Notice, Modal, TFile } = require("obsidian");
+const { Plugin, Notice, Modal, TFolder } = require("obsidian");
+
+/* ================= CONFIG ================= */
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+const COLOR_PALETTE = [
+  "#4CAF50",
+  "#2196F3",
+  "#FFC107",
+  "#F44336",
+  "#9C27B0",
+  "#FF9800",
+  "#00BCD4",
+  "#8BC34A",
+  "#3F51B5",
+  "#E91E63",
+  "#CDDC39",
+  "#795548",
+];
+
+function formatMoney(n) {
+  return Number(n).toFixed(2);
+}
+
+function getMonthInfo(date) {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const monthIndex = d.getMonth();
+  const monthName = MONTH_NAMES[monthIndex];
+  const monthNum = String(monthIndex + 1).padStart(2, "0");
+  return { year, monthFolder: `${monthNum}-${monthName}` };
+}
+
+/* ================= MODAL ================= */
 
 class AddTransactionModal extends Modal {
   constructor(app, plugin, type) {
     super(app);
     this.plugin = plugin;
-    this.type = type; // "expense" или "income"
+    this.type = type;
   }
 
-  onOpen() {
+  async onOpen() {
     const { contentEl } = this;
+    contentEl.empty();
 
-    contentEl.createEl("h2", { text: this.type === "expense" ? "Добавить расход" : "Добавить доход" });
+    contentEl.createEl("h2", {
+      text: this.type === "expense" ? "Добавить расход" : "Добавить доход",
+    });
 
-    const form = contentEl.createEl("div", { cls: "finance-form" });
+    const form = contentEl.createDiv();
     form.style.display = "flex";
     form.style.flexDirection = "column";
-    form.style.gap = "8px";
-    form.style.marginTop = "8px";
+    form.style.gap = "12px";
 
-    // Сумма
-    const amountLabel = form.createEl("label", { text: "Сумма" });
-    const amount = form.createEl("input", { type: "number", placeholder: "Например: 500" });
+    const amount = form.createEl("input", {
+      type: "number",
+      placeholder: "Сумма",
+    });
 
-    // Категория
-    const catLabel = form.createEl("label", { text: "Категория" });
-    const category = form.createEl("input", { type: "text", placeholder: "Например: Еда" });
+    const preview = form.createEl("div", { text: "0.00 ₽" });
+    amount.addEventListener("input", () => {
+      preview.textContent = formatMoney(amount.value || 0) + " ₽";
+    });
 
-    // Дата
-    const dateLabel = form.createEl("label", { text: "Дата" });
+    const categories = await this.plugin.getAllCategories();
+    const select = form.createEl("select");
+    select.createEl("option", { text: "Выберите категорию", value: "" });
+    categories.forEach((c) => {
+      select.createEl("option", { text: c, value: c });
+    });
+    select.createEl("option", {
+      text: "+ Новая категория...",
+      value: "__new__",
+    });
+
+    const newCat = form.createEl("input", {
+      type: "text",
+      placeholder: "Название новой категории",
+    });
+    newCat.style.display = "none";
+
+    select.addEventListener("change", () => {
+      newCat.style.display = select.value === "__new__" ? "block" : "none";
+    });
+
     const dateInput = form.createEl("input", { type: "date" });
     dateInput.value = new Date().toISOString().split("T")[0];
 
-    // Комментарий
-    const commentLabel = form.createEl("label", { text: "Комментарий (необязательно)" });
-    const comment = form.createEl("input", { type: "text", placeholder: "Например: Шаурма" });
-
-    // Кнопка сохранить
-    const btn = form.createEl("button", { text: "Сохранить" });
-    btn.addEventListener("click", async () => {
-      if (!amount.value || !category.value || !dateInput.value) {
-        new Notice("Введите сумму, категорию и дату!");
-        return;
-      }
-      await this.plugin.saveTransaction(
-        amount.value,
-        category.value,
-        dateInput.value,
-        comment.value,
-        this.type
-      );
-      new Notice(`${this.type === "expense" ? "Расход" : "Доход"} сохранен!`);
-      this.close();
+    const comment = form.createEl("input", {
+      type: "text",
+      placeholder: "Комментарий",
     });
-  }
 
-  onClose() {
-    this.contentEl.empty();
+    const btn = form.createEl("button", { text: "Сохранить", cls: "mod-cta" });
+
+    btn.onclick = async () => {
+      if (!amount.value) return new Notice("Введите сумму");
+      const category = select.value === "__new__" ? newCat.value : select.value;
+      if (!category) return new Notice("Выберите категорию");
+
+      await this.plugin.saveTransaction({
+        amount: formatMoney(amount.value),
+        category: category.trim(),
+        date: dateInput.value,
+        comment: comment.value.trim(),
+        type: this.type,
+      });
+
+      new Notice("Сохранено");
+      this.close();
+    };
   }
 }
 
+/* ================= PLUGIN ================= */
+
 module.exports = class FinancePlugin extends Plugin {
   async onload() {
-    // Команда добавления расхода
     this.addCommand({
       id: "add-expense",
       name: "Добавить расход",
-      callback: () => {
-        new AddTransactionModal(this.app, this, "expense").open();
-      }
+      callback: () => new AddTransactionModal(this.app, this, "expense").open(),
     });
 
-    // Команда добавления дохода
     this.addCommand({
       id: "add-income",
       name: "Добавить доход",
-      callback: () => {
-        new AddTransactionModal(this.app, this, "income").open();
-      }
+      callback: () => new AddTransactionModal(this.app, this, "income").open(),
     });
   }
 
-  async saveTransaction(amount, category, date, comment, type) {
-    const d = new Date(date);
-    const monthFileName = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,"0")}.md`;
-    const monthsFolder = "Finance/Months";
-    const chartsFolder = "Finance/Charts";
-
-    // Создание папок если нет
-    if (!this.app.vault.getAbstractFileByPath("Finance")) await this.app.vault.createFolder("Finance");
-    if (!this.app.vault.getAbstractFileByPath(monthsFolder)) await this.app.vault.createFolder(monthsFolder);
-    if (!this.app.vault.getAbstractFileByPath(chartsFolder)) await this.app.vault.createFolder(chartsFolder);
-
-    const filePath = `${monthsFolder}/${monthFileName}`;
-    let file = this.app.vault.getAbstractFileByPath(filePath);
-
-    // Создаём шаблон месяца, если файла нет
-    if (!file) {
-      const template = `# 📊 Финансы — ${monthFileName}
-
-## 📥 Доходы
-# Формат: +Сумма | Категория | Дата | Комментарий
-
-## 📤 Расходы
-# Формат: -Сумма | Категория | Дата | Комментарий
-`;
-      await this.app.vault.create(filePath, template);
-      file = this.app.vault.getAbstractFileByPath(filePath);
+  async ensureFolder(path) {
+    if (!this.app.vault.getAbstractFileByPath(path)) {
+      await this.app.vault.createFolder(path);
     }
-
-    // Читаем контент
-    let content = await this.app.vault.read(file);
-    const sign = type === "expense" ? "-" : "+";
-    const sectionHeader = type === "expense" ? "## 📤 Расходы" : "## 📥 Доходы";
-    const lines = content.split("\n");
-
-    // Находим индекс раздела
-    let insertIndex = lines.findIndex(l => l.trim() === sectionHeader);
-    insertIndex += 1;
-
-    // Считаем существующие элементы для нумерации
-    let count = 0;
-    while (insertIndex + count < lines.length && /^\d+\./.test(lines[insertIndex + count])) {
-      count++;
-    }
-
-    // Формируем нумерованную строку
-    const numberedLine = `${count + 1}. ${sign}${amount} ₽ | ${category} | ${date}${comment ? ` | ${comment}` : ""}`;
-    lines.splice(insertIndex + count, 0, numberedLine);
-
-    // Перезаписываем файл месяца
-    await this.app.vault.modify(file, lines.join("\n"));
-
-    // Обновляем диаграммы
-    await this.updateCharts(filePath, monthFileName, chartsFolder);
   }
 
-  async updateCharts(monthFilePath, monthFileName, chartsFolder) {
-    const file = this.app.vault.getAbstractFileByPath(monthFilePath);
-    if (!file) return;
+  async writeFile(path, content) {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (existing) await this.app.vault.modify(existing, content);
+    else await this.app.vault.create(path, content);
+  }
+
+  async getAllCategories() {
+    const categories = new Set();
+    const files = this.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.includes("Finance") && f.name === "data.md");
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      content.split("\n").forEach((line) => {
+        if (line.includes("|")) {
+          const parts = line.split("|");
+          if (parts.length >= 2 && !parts[1].includes("Категория")) {
+            categories.add(parts[1].trim());
+          }
+        }
+      });
+    }
+    return Array.from(categories);
+  }
+
+  async saveTransaction(data) {
+    const base = "Finance";
+    const { year, monthFolder } = getMonthInfo(data.date);
+
+    const yearPath = `${base}/${year}`;
+    const monthPath = `${yearPath}/${monthFolder}`;
+    const yearsPath = `${base}/Years`;
+
+    await this.ensureFolder(base);
+    await this.ensureFolder(yearPath);
+    await this.ensureFolder(monthPath);
+    await this.ensureFolder(yearsPath);
+
+    const dataFile = `${monthPath}/data.md`;
+    let file = this.app.vault.getAbstractFileByPath(dataFile);
+    if (!file) {
+      await this.app.vault.create(
+        dataFile,
+        "### Transactions\n| Сумма | Категория | Дата | Комментарий |\n| --- | --- | --- | --- |",
+      );
+      file = this.app.vault.getAbstractFileByPath(dataFile);
+    }
+
+    const sign = data.type === "expense" ? "-" : "+";
+    const line = `${sign}${data.amount} ₽ | ${data.category} | ${data.date} | ${data.comment || ""}`;
 
     const content = await this.app.vault.read(file);
-    const lines = content.split("\n");
+    await this.app.vault.modify(file, content + "\n" + line);
 
-    const incomeLines = [];
-    const expenseLines = [];
-    let section = null;
+    await this.updateMonth(monthPath);
+    await this.updateYear(year);
+    await this.updateDashboard();
+  }
 
-    for (let line of lines) {
-        if (line.startsWith("## 📥")) section = "income";
-        else if (line.startsWith("## 📤")) section = "expense";
-        else if (line.startsWith("#") || line.trim() === "") continue;
+  async parseMonth(path) {
+    const file = this.app.vault.getAbstractFileByPath(`${path}/data.md`);
+    if (!file) return [];
 
-        else if (section === "income") incomeLines.push(line);
-        else if (section === "expense") expenseLines.push(line);
-    }
+    const content = await this.app.vault.read(file);
+    return content
+      .split("\n")
+      .filter((l) => l.startsWith("+") || l.startsWith("-"))
+      .map((l) => {
+        const parts = l.split("|").map((p) => p.trim());
+        // Извлекаем число, учитывая минус
+        const rawAmount = parts[0].replace(/[^-0-9.]/g, "");
+        return {
+          amount: parseFloat(rawAmount),
+          type: l.startsWith("-") ? "expense" : "income",
+          category: parts[1],
+          date: parts[2],
+        };
+      });
+  }
 
-    const expenseByCat = {};
-    for (let l of expenseLines) {
-        const parts = l.split("|").map(p => p.trim());
-        if (parts.length >= 2) {
-            const value = parseFloat(parts[0].replace(/^\d+\./, "").replace(/[^0-9.]/g, ""));
-            const cat = parts[1];
-            expenseByCat[cat] = (expenseByCat[cat] || 0) + value;
-        }
-    }
+  async createChart(path, title, dataObj) {
+    const labels = Object.keys(dataObj);
+    const values = Object.values(dataObj);
+    if (labels.length === 0) return;
 
-    const incomeByCat = {};
-    for (let l of incomeLines) {
-        const parts = l.split("|").map(p => p.trim());
-        if (parts.length >= 2) {
-            const value = parseFloat(parts[0].replace(/^\d+\./, "").replace(/[^0-9.]/g, ""));
-            const cat = parts[1];
-            incomeByCat[cat] = (incomeByCat[cat] || 0) + value;
-        }
-    }
+    const colors = labels.map(
+      (_, i) => COLOR_PALETTE[i % COLOR_PALETTE.length],
+    );
 
-    const getRandomColor = () => {
-        const letters = "0123456789ABCDEF";
-        let color = "#";
-        for (let i = 0; i < 6; i++) color += letters[Math.floor(Math.random() * 16)];
-        return color;
-    };
-
-    const totalIncome = Object.values(incomeByCat).reduce((a,b) => a+b, 0);
-    const totalExpense = Object.values(expenseByCat).reduce((a,b) => a+b, 0);
-
-    const expenseColors = Object.keys(expenseByCat).map(() => `"${getRandomColor()}"`);
-    const incomeColors = Object.keys(incomeByCat).map(() => `"${getRandomColor()}"`);
-    const compareColors = [`"green"`, `"red"`];
-
-    const charts = [
-        {
-            name: `${monthFileName}-expenses-by-category.md`,
-            labels: Object.keys(expenseByCat),
-            series: [{ title: "Расходы", data: Object.values(expenseByCat) }],
-            colors: expenseColors,
-            type: "pie",
-            title: "Расходы по категориям"
-        },
-        {
-            name: `${monthFileName}-income-by-category.md`,
-            labels: Object.keys(incomeByCat),
-            series: [{ title: "Доходы", data: Object.values(incomeByCat) }],
-            colors: incomeColors,
-            type: "pie",
-            title: "Доходы по категориям"
-        },
-        {
-            name: `${monthFileName}-income-vs-expense.md`,
-            labels: ["Доходы", "Расходы"],
-            series: [{ title: "Сравнение", data: [totalIncome, totalExpense] }],
-            colors: compareColors,
-            type: "bar",
-            title: "Доходы vs Расходы"
-        }
-    ];
-
-    // Создание диаграмм
-    for (let c of charts) {
-        const chartPath = `${chartsFolder}/${c.name}`;
-        const chartContent = `\`\`\`chart
-type: ${c.type}
-labels: [${c.labels.join(",")}]
+    // Важно: здесь используется блок ```chart
+    const content = `\`\`\`chart
+type: bar
+labels: [${labels.map((l) => `"${l}"`).join(", ")}]
 series:
-${c.series.map((s) => `  - title: ${s.title}\n    data: [${s.data.join(",")}]\n    backgroundColor: [${c.colors.join(",")}]`).join("\n")}
-options:
-  plugins:
-    datalabels:
-      display: true
-      color: black
-      font:
-        weight: bold
-width: 60%
-height: 400px
+  - title: "${title}"
+    data: [${values.join(", ")}]
+    backgroundColor: [${colors.map((c) => `"${c}"`).join(", ")}]
 \`\`\``;
 
-        const chartFile = this.app.vault.getAbstractFileByPath(chartPath);
-        if (chartFile) await this.app.vault.modify(chartFile, chartContent);
-        else await this.app.vault.create(chartPath, chartContent);
+    await this.writeFile(path, content);
+  }
+
+  async updateMonth(path) {
+    const data = await this.parseMonth(path);
+    const expenseByCat = {},
+      incomeByCat = {};
+
+    data.forEach((t) => {
+      const target = t.type === "expense" ? expenseByCat : incomeByCat;
+      target[t.category] = (target[t.category] || 0) + Math.abs(t.amount);
+    });
+
+    const totalIncome = Object.values(incomeByCat).reduce((a, b) => a + b, 0);
+    const totalExpense = Object.values(expenseByCat).reduce((a, b) => a + b, 0);
+
+    await this.createChart(
+      `${path}/expenses_chart.md`,
+      "Расходы",
+      expenseByCat,
+    );
+    await this.createChart(`${path}/income_chart.md`, "Доходы", incomeByCat);
+    await this.createChart(`${path}/summary_chart.md`, "Итог", {
+      Доход: totalIncome,
+      Расход: totalExpense,
+    });
+  }
+
+  async updateYear(year) {
+    const yearFolder = this.app.vault.getAbstractFileByPath(`Finance/${year}`);
+    if (!(yearFolder instanceof TFolder)) return;
+
+    const monthlyBalances = {};
+    const months = yearFolder.children
+      .filter((f) => f instanceof TFolder)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const m of months) {
+      const data = await this.parseMonth(m.path);
+      const balance = data.reduce((a, b) => a + b.amount, 0);
+      monthlyBalances[m.name] = balance;
     }
 
-    // Создание статистики в той же папке charts
-    const topExpenses = Object.entries(expenseByCat)
-        .sort((a,b) => b[1]-a[1])
-        .slice(0,5)
-        .map(([cat, val], idx) => `${idx+1}. ${cat}: ${val} ₽`)
-        .join("\n");
+    await this.createChart(
+      `Finance/Years/${year}-summary.md`,
+      `Баланс по месяцам (${year})`,
+      monthlyBalances,
+    );
+  }
 
-    const topIncome = Object.entries(incomeByCat)
-        .sort((a,b) => b[1]-a[1])
-        .slice(0,5)
-        .map(([cat, val], idx) => `${idx+1}. ${cat}: ${val} ₽`)
-        .join("\n");
+  async updateDashboard() {
+    const now = new Date();
+    const { year, monthFolder } = getMonthInfo(now);
+    const path = `Finance/${year}/${monthFolder}`;
+    const data = await this.parseMonth(path);
 
-    const statsContent = `# Статистика за месяц ${monthFileName}
+    const totalIncome = data
+      .filter((t) => t.type === "income")
+      .reduce((a, b) => a + b.amount, 0);
+    const totalExpense = Math.abs(
+      data
+        .filter((t) => t.type === "expense")
+        .reduce((a, b) => a + b.amount, 0),
+    );
+    const balance = totalIncome - totalExpense;
 
-## Общие показатели
-- Общие доходы: ${totalIncome} ₽
-- Общие расходы: ${totalExpense} ₽
-- Сальдо: ${totalIncome - totalExpense} ₽
+    const content =
+      `# 💰 Финансы: Дашборд\n` +
+      `**Период:** ${monthFolder} ${year}\n\n` +
+      `| Доходы | Расходы | Баланс |\n` +
+      `| --- | --- | --- |\n` +
+      `| ${formatMoney(totalIncome)} ₽ | ${formatMoney(totalExpense)} ₽ | **${formatMoney(balance)} ₽** |\n\n` +
+      `### График расходов по категориям\n` +
+      `![[${path}/expenses_chart.md]]\n\n` +
+      `### Сравнение за месяц\n` +
+      `![[${path}/summary_chart.md]]\n\n` +
+      `--- \n` +
+      `_Обновлено: ${new Date().toLocaleString()}_`;
 
-## Наибольшие доходы
-${topIncome}
-
-## Наибольшие расходы
-${topExpenses}
-`;
-
-    const statsPath = `${chartsFolder}/${monthFileName}-stats.md`;
-    const statsFile = this.app.vault.getAbstractFileByPath(statsPath);
-    if (statsFile) await this.app.vault.modify(statsFile, statsContent);
-    else await this.app.vault.create(statsPath, statsContent);
+    await this.writeFile("Finance/Dashboard.md", content);
   }
 };

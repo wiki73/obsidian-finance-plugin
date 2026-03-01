@@ -1,7 +1,7 @@
 {
   "id": "finance-tracker",
   "name": "Finance Tracker",
-  "version": "0.0.1",
+  "version": "0.2.1",
   "minAppVersion": "0.15.0",
   "description": "Финансовый учёт в Obsidian",
   "author": "Vladimir Savchenko",
